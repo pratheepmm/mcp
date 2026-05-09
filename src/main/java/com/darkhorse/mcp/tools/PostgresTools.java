@@ -1,6 +1,6 @@
 package com.darkhorse.mcp.tools;
 
-import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.stereotype.Service;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,7 +18,7 @@ public class PostgresTools {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    @Tool(description = "Get currently active Postgres queries that are not idle")
+    @McpTool(description = "Get currently active Postgres queries that are not idle")
     public List<Map<String, Object>> getActiveQueries() {
         String sql = "SELECT pid, usename, application_name, state, query, age(clock_timestamp(), query_start) AS duration " +
                      "FROM pg_stat_activity " +
@@ -26,7 +26,7 @@ public class PostgresTools {
         return jdbcTemplate.queryForList(sql);
     }
 
-    @Tool(description = "Get Postgres queries that are currently blocking other queries")
+    @McpTool(description = "Get Postgres queries that are currently blocking other queries")
     public List<Map<String, Object>> getBlockingQueries() {
         String sql = "SELECT blocked_locks.pid AS blocked_pid, " +
                      "       blocked_activity.usename AS blocked_user, " +
@@ -52,14 +52,14 @@ public class PostgresTools {
         return jdbcTemplate.queryForList(sql);
     }
 
-    @Tool(description = "Terminate a specific Postgres backend process by PID")
+    @McpTool(description = "Terminate a specific Postgres backend process by PID")
     public String terminateBackend(int pid) {
         String sql = "SELECT pg_terminate_backend(?)";
         Boolean terminated = jdbcTemplate.queryForObject(sql, Boolean.class, pid);
         return Boolean.TRUE.equals(terminated) ? "Successfully terminated process " + pid : "Failed to terminate process " + pid;
     }
 
-    @Tool(description = "Get the sizes of the largest tables in the current Postgres database")
+    @McpTool(description = "Get the sizes of the largest tables in the current Postgres database")
     public List<Map<String, Object>> getTableSizes() {
         String sql = "SELECT relname as table_name, pg_size_pretty(pg_total_relation_size(relid)) As size, " +
                      "       pg_total_relation_size(relid) as size_bytes " +
@@ -68,10 +68,11 @@ public class PostgresTools {
         return jdbcTemplate.queryForList(sql);
     }
 
-    @Tool(description = "Explain and analyze a specific Postgres SQL query to understand its execution plan")
+    @McpTool(description = "Explain and analyze a specific Postgres SQL query to understand its execution plan")
     public List<Map<String, Object>> explainAnalyzeQuery(String query) {
         // Directly concatenating the query to execute EXPLAIN ANALYZE
         String sql = "EXPLAIN ANALYZE " + query;
         return jdbcTemplate.queryForList(sql);
     }
 }
+
