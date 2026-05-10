@@ -1,5 +1,7 @@
 package com.darkhorse.mcp.service;
 
+import com.darkhorse.mcp.model.PaginatedResponse;
+import com.darkhorse.mcp.utils.PaginationUtils;
 import org.apache.kafka.clients.admin.*;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigResource;
@@ -26,9 +28,10 @@ public class KafkaService {
         return AdminClient.create(properties);
     }
 
-    public List<String> discoverTopics() throws Exception {
+    public PaginatedResponse<String> discoverTopics(String cursor) throws Exception {
         try (AdminClient adminClient = createAdminClient()) {
-            return new ArrayList<>(adminClient.listTopics().names().get());
+            List<String> topics = new ArrayList<>(adminClient.listTopics().names().get());
+            return PaginationUtils.paginateList(topics, cursor);
         }
     }
 
@@ -84,13 +87,13 @@ public class KafkaService {
         }
     }
 
-    public List<Map<String, Object>> analyzeConsumerLag(String groupId) throws Exception {
+    public PaginatedResponse<Map<String, Object>> analyzeConsumerLag(String groupId, String cursor) throws Exception {
         try (AdminClient adminClient = createAdminClient()) {
             Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> committedOffsets =
                     adminClient.listConsumerGroupOffsets(groupId).partitionsToOffsetAndMetadata().get();
 
             if (committedOffsets.isEmpty()) {
-                return Collections.emptyList();
+                return new PaginatedResponse<>(Collections.emptyList(), null);
             }
 
             Map<TopicPartition, OffsetSpec> requestLatestOffsets = new HashMap<>();
@@ -116,11 +119,11 @@ public class KafkaService {
                 lagInfo.put("lag", lag);
                 lagList.add(lagInfo);
             }
-            return lagList;
+            return PaginationUtils.paginateList(lagList, cursor);
         }
     }
 
-    public List<Map<String, Object>> inspectPartitionOffsets(String topicName) throws Exception {
+    public PaginatedResponse<Map<String, Object>> inspectPartitionOffsets(String topicName, String cursor) throws Exception {
         try (AdminClient adminClient = createAdminClient()) {
             TopicDescription description = adminClient.describeTopics(Collections.singletonList(topicName))
                     .allTopicNames().get().get(topicName);
@@ -140,7 +143,7 @@ public class KafkaService {
                 info.put("end_offset", entry.getValue().offset());
                 offsetList.add(info);
             }
-            return offsetList;
+            return PaginationUtils.paginateList(offsetList, cursor);
         }
     }
 

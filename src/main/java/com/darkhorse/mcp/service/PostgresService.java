@@ -1,5 +1,7 @@
 package com.darkhorse.mcp.service;
 
+import com.darkhorse.mcp.model.PaginatedResponse;
+import com.darkhorse.mcp.utils.PaginationUtils;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,24 @@ public class PostgresService {
 
     public PostgresService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
+    }
+
+    private PaginatedResponse<Map<String, Object>> executePaginatedQuery(String sql, String cursor, Object... args) {
+        int offset = PaginationUtils.decodeCursor(cursor);
+        int fetchSize = PaginationUtils.PAGE_SIZE + 1; // Fetch one extra to check if there's more
+        
+        // Append LIMIT and OFFSET to the base query
+        String paginatedSql = sql + " LIMIT " + fetchSize + " OFFSET " + offset;
+        
+        List<Map<String, Object>> results = jdbcTemplate.queryForList(paginatedSql, args);
+        
+        String nextCursor = null;
+        if (results.size() > PaginationUtils.PAGE_SIZE) {
+            nextCursor = PaginationUtils.encodeCursor(offset + PaginationUtils.PAGE_SIZE);
+            results = results.subList(0, PaginationUtils.PAGE_SIZE); // remove the extra element
+        }
+        
+        return new PaginatedResponse<>(results, nextCursor);
     }
 
     public List<Map<String, Object>> diagnoseLockContention() {
@@ -42,12 +62,12 @@ public class PostgresService {
         return jdbcTemplate.queryForList(sql);
     }
 
-    public List<Map<String, Object>> investigateSlowQueries(int thresholdSeconds) {
+    public PaginatedResponse<Map<String, Object>> investigateSlowQueries(int thresholdSeconds, String cursor) {
         String sql = "SELECT pid, usename, application_name, state, query, age(clock_timestamp(), query_start) AS duration " +
                 "FROM pg_stat_activity " +
                 "WHERE state != 'idle' AND query NOT ILIKE '%pg_stat_activity%' " +
                 "AND extract(epoch from (clock_timestamp() - query_start)) > ?";
-        return jdbcTemplate.queryForList(sql, thresholdSeconds);
+        return executePaginatedQuery(sql, cursor, thresholdSeconds);
     }
 
     public String analyzeTableHealth(String tableName) {
@@ -68,6 +88,7 @@ public class PostgresService {
     }
 
     public List<Map<String, Object>> explainAnalyzeQuery(String query) {
+        // Explain does not need pagination as it returns a structured execution plan block
         String sql = "EXPLAIN ANALYZE " + query;
         return jdbcTemplate.queryForList(sql);
     }
