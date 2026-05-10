@@ -20,137 +20,108 @@ public class PostgresTools {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    @McpTool(description = "Get currently active Postgres queries that are not idle")
-    public Mono<List<Map<String, Object>>> getActiveQueries() {
-        return Mono.fromCallable(() -> {
-            String sql = "SELECT pid, usename, application_name, state, query, age(clock_timestamp(), query_start) AS duration " +
-                         "FROM pg_stat_activity " +
-                         "WHERE state != 'idle' AND query NOT ILIKE '%pg_stat_activity%'";
-            return jdbcTemplate.queryForList(sql);
-        }).subscribeOn(Schedulers.boundedElastic());
-    }
-
-    @McpTool(description = "Get Postgres queries that are currently blocking other queries")
-    public Mono<List<Map<String, Object>>> getBlockingQueries() {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Diagnose active lock contention by mapping blocked queries to the exact processes and users blocking them.")
+    public Mono<List<Map<String, Object>>> diagnoseLockContention() {
         return Mono.fromCallable(() -> {
             String sql = "SELECT blocked_locks.pid AS blocked_pid, " +
-                         "       blocked_activity.usename AS blocked_user, " +
-                         "       blocking_locks.pid AS blocking_pid, " +
-                         "       blocking_activity.usename AS blocking_user, " +
-                         "       blocked_activity.query AS blocked_query, " +
-                         "       blocking_activity.query AS blocking_query " +
-                         "FROM pg_catalog.pg_locks blocked_locks " +
-                         "JOIN pg_catalog.pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid " +
-                         "JOIN pg_catalog.pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype " +
-                         "     AND blocking_locks.DATABASE IS NOT DISTINCT FROM blocked_locks.DATABASE " +
-                         "     AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation " +
-                         "     AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page " +
-                         "     AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple " +
-                         "     AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid " +
-                         "     AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid " +
-                         "     AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid " +
-                         "     AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid " +
-                         "     AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid " +
-                         "     AND blocking_locks.pid != blocked_locks.pid " +
-                         "JOIN pg_catalog.pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid " +
-                         "WHERE NOT blocked_locks.GRANTED";
+                    "       blocked_activity.usename AS blocked_user, " +
+                    "       blocking_locks.pid AS blocking_pid, " +
+                    "       blocking_activity.usename AS blocking_user, " +
+                    "       blocked_activity.query AS blocked_query, " +
+                    "       blocking_activity.query AS blocking_query " +
+                    "FROM pg_catalog.pg_locks blocked_locks " +
+                    "JOIN pg_catalog.pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid " +
+                    "JOIN pg_catalog.pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype " +
+                    "     AND blocking_locks.DATABASE IS NOT DISTINCT FROM blocked_locks.DATABASE " +
+                    "     AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation " +
+                    "     AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page " +
+                    "     AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple " +
+                    "     AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid " +
+                    "     AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid " +
+                    "     AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid " +
+                    "     AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid " +
+                    "     AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid " +
+                    "     AND blocking_locks.pid != blocked_locks.pid " +
+                    "JOIN pg_catalog.pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid " +
+                    "WHERE NOT blocked_locks.GRANTED";
             return jdbcTemplate.queryForList(sql);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Execute a DDL or DML SQL statement to fix issues, create indexes, or partition tables. Returns the number of rows affected.")
-    public Mono<Integer> executeSqlUpdate(String sql) {
-        return Mono.fromCallable(() -> {
-            return jdbcTemplate.update(sql);
-        }).subscribeOn(Schedulers.boundedElastic());
-    }
-
-    @McpTool(description = "Identify long-running queries that exceed a certain threshold in seconds")
-    public Mono<List<Map<String, Object>>> getLongRunningQueries(int thresholdSeconds) {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Investigate queries running longer than the specified threshold (in seconds) to identify active latency spikes.")
+    public Mono<List<Map<String, Object>>> investigateSlowQueries(int thresholdSeconds) {
         return Mono.fromCallable(() -> {
             String sql = "SELECT pid, usename, application_name, state, query, age(clock_timestamp(), query_start) AS duration " +
-                         "FROM pg_stat_activity " +
-                         "WHERE state != 'idle' AND query NOT ILIKE '%pg_stat_activity%' " +
-                         "AND extract(epoch from (clock_timestamp() - query_start)) > ?";
+                    "FROM pg_stat_activity " +
+                    "WHERE state != 'idle' AND query NOT ILIKE '%pg_stat_activity%' " +
+                    "AND extract(epoch from (clock_timestamp() - query_start)) > ?";
             return jdbcTemplate.queryForList(sql, thresholdSeconds);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Create an index on a table to optimize query performance")
-    public Mono<String> createIndex(String tableName, String indexName, String columns) {
+    @McpTool(description = "[Risk: LOW, Read-Only: false] Analyze table health by executing an ANALYZE command to recalculate statistics for the query planner. Use when execution plans suddenly degrade.",
+             annotations = @McpTool.McpAnnotations(destructiveHint = true))
+    public Mono<String> analyzeTableHealth(String tableName) {
         return Mono.fromCallable(() -> {
-            String sql = String.format("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", indexName, tableName, columns);
-            jdbcTemplate.execute(sql);
-            return "Successfully created index " + indexName + " on " + tableName + "(" + columns + ")";
-        }).subscribeOn(Schedulers.boundedElastic());
-    }
-
-    @McpTool(description = "Run ANALYZE on a table to update statistics for the query planner")
-    public Mono<String> analyzeTable(String tableName) {
-        return Mono.fromCallable(() -> {
-            // Sanitize table name to prevent basic SQL injection, though executeSqlUpdate is already generic
             String sql = "ANALYZE " + tableName;
             jdbcTemplate.execute(sql);
-            return "Successfully analyzed table " + tableName;
+            return "Successfully recalculated query planner statistics for table " + tableName;
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Get the sizes of the largest tables in the current Postgres database")
-    public Mono<List<Map<String, Object>>> getTableSizes() {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Analyze storage growth, table sizes, and dead tuple bloat to detect tables requiring vacuuming or partitioning.")
+    public Mono<List<Map<String, Object>>> analyzeStorageGrowth() {
         return Mono.fromCallable(() -> {
-            String sql = "SELECT relname as table_name, pg_size_pretty(pg_total_relation_size(relid)) As size, " +
-                         "       pg_total_relation_size(relid) as size_bytes " +
-                         "FROM pg_catalog.pg_statio_user_tables " +
-                         "ORDER BY pg_total_relation_size(relid) DESC LIMIT 10";
+            String sql = "SELECT stat.relname AS table_name, " +
+                    "       pg_size_pretty(pg_total_relation_size(stat.relid)) AS total_size, " +
+                    "       stat.n_live_tup AS live_tuples, " +
+                    "       stat.n_dead_tup AS dead_tuples, " +
+                    "       round(stat.n_dead_tup * 100.0 / nullif(stat.n_live_tup + stat.n_dead_tup, 0), 2) AS bloat_ratio_percent " +
+                    "FROM pg_stat_user_tables stat " +
+                    "ORDER BY pg_total_relation_size(stat.relid) DESC LIMIT 15";
             return jdbcTemplate.queryForList(sql);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Explain and analyze a specific Postgres SQL query to understand its execution plan")
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Generate a detailed execution plan for a query to diagnose missing indexes or poor join strategies. (Warning: Runs the query to analyze it)")
     public Mono<List<Map<String, Object>>> explainAnalyzeQuery(String query) {
         return Mono.fromCallable(() -> {
-            // Directly concatenating the query to execute EXPLAIN ANALYZE
             String sql = "EXPLAIN ANALYZE " + query;
             return jdbcTemplate.queryForList(sql);
         }).subscribeOn(Schedulers.boundedElastic());
     }
-    
-    @McpTool(description = "Get database statistics such as cache hit ratio, commits, and rollbacks")
-    public Mono<List<Map<String, Object>>> getDatabaseStats() {
+
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Detect sequential scans across all tables. High seq scans vs index scans strongly indicates a missing index.")
+    public Mono<List<Map<String, Object>>> detectSequentialScans() {
         return Mono.fromCallable(() -> {
-            String sql = "SELECT datname, " +
-                         "       xact_commit, " +
-                         "       xact_rollback, " +
-                         "       blks_read, " +
-                         "       blks_hit, " +
-                         "       round(blks_hit * 100.0 / nullif(blks_hit + blks_read, 0), 2) AS cache_hit_ratio_percent " +
-                         "FROM pg_stat_database " +
-                         "WHERE datname = current_database()";
+            String sql = "SELECT relname AS table_name, seq_scan, seq_tup_read, idx_scan, idx_tup_fetch, " +
+                    "       round(seq_scan * 100.0 / nullif(seq_scan + idx_scan, 0), 2) AS seq_scan_percentage " +
+                    "FROM pg_stat_user_tables " +
+                    "WHERE seq_scan > 0 " +
+                    "ORDER BY seq_scan DESC LIMIT 15";
             return jdbcTemplate.queryForList(sql);
         }).subscribeOn(Schedulers.boundedElastic());
     }
-    
-    @McpTool(description = "Get unused indexes in the current Postgres database")
-    public Mono<List<Map<String, Object>>> getUnusedIndexes() {
+
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Audit index efficiency by identifying unused indexes that are consuming write IO and storage without providing read benefits.")
+    public Mono<List<Map<String, Object>>> analyzeIndexEfficiency() {
         return Mono.fromCallable(() -> {
             String sql = "SELECT schemaname, relname AS table_name, indexrelname AS index_name, " +
-                         "       pg_size_pretty(pg_relation_size(indexrelid)) AS index_size, idx_scan " +
-                         "FROM pg_stat_user_indexes " +
-                         "WHERE idx_scan = 0 " +
-                         "ORDER BY pg_relation_size(indexrelid) DESC LIMIT 20";
+                    "       pg_size_pretty(pg_relation_size(indexrelid)) AS index_size, idx_scan " +
+                    "FROM pg_stat_user_indexes " +
+                    "WHERE idx_scan = 0 " +
+                    "ORDER BY pg_relation_size(indexrelid) DESC LIMIT 20";
             return jdbcTemplate.queryForList(sql);
         }).subscribeOn(Schedulers.boundedElastic());
     }
-    
-    @McpTool(description = "Get table bloat estimate (dead tuples) for tables in the database")
-    public Mono<List<Map<String, Object>>> getTableBloat() {
+
+    @McpTool(description = "[Risk: MEDIUM, Read-Only: false] Propose and apply an index creation to fix query latency. Use this after detecting seq scans or analyzing execution plans.",
+             annotations = @McpTool.McpAnnotations(destructiveHint = true))
+    public Mono<String> applyApprovedMigration(String tableName, String indexName, String columns) {
         return Mono.fromCallable(() -> {
-            String sql = "SELECT relname AS table_name, n_live_tup, n_dead_tup, " +
-                         "       round(n_dead_tup * 100.0 / nullif(n_live_tup + n_dead_tup, 0), 2) AS dead_tup_ratio_percent " +
-                         "FROM pg_stat_user_tables " +
-                         "ORDER BY n_dead_tup DESC LIMIT 20";
-            return jdbcTemplate.queryForList(sql);
+            String sql = String.format("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s (%s)", indexName, tableName, columns);
+            jdbcTemplate.execute(sql);
+            return "Successfully deployed index " + indexName + " on " + tableName + "(" + columns + ") concurrently to avoid locking.";
         }).subscribeOn(Schedulers.boundedElastic());
     }
 }
-

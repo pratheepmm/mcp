@@ -27,8 +27,8 @@ public class KafkaTools {
         return AdminClient.create(properties);
     }
 
-    @McpTool(description = "List all Kafka topics in the cluster")
-    public Mono<List<String>> listKafkaTopics() {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Discover active Kafka topics in the cluster to begin topology investigation.")
+    public Mono<List<String>> discoverTopics() {
         return Mono.fromCallable(() -> {
             try (AdminClient adminClient = createAdminClient()) {
                 List<String> topics = new ArrayList<>(adminClient.listTopics().names().get());
@@ -37,8 +37,8 @@ public class KafkaTools {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Describe a specific Kafka topic to check how many partitions it has and replica information")
-    public Mono<Map<String, Object>> describeKafkaTopic(String topicName) {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Analyze topic health, verifying partition count, leader assignments, and under-replicated partitions (ISR discrepancies).")
+    public Mono<Map<String, Object>> analyzeTopicHealth(String topicName) {
         return Mono.fromCallable(() -> {
             try (AdminClient adminClient = createAdminClient()) {
                 TopicDescription description = adminClient.describeTopics(Collections.singletonList(topicName))
@@ -48,6 +48,15 @@ public class KafkaTools {
                 result.put("name", description.name());
                 result.put("internal", description.isInternal());
                 result.put("partitions_count", description.partitions().size());
+                
+                int underReplicatedCount = 0;
+                for (org.apache.kafka.common.TopicPartitionInfo p : description.partitions()) {
+                    if (p.isr().size() < p.replicas().size()) {
+                        underReplicatedCount++;
+                    }
+                }
+                result.put("under_replicated_partitions", underReplicatedCount);
+
                 result.put("partitions", description.partitions().stream().map(p -> {
                     Map<String, Object> partMap = new HashMap<>();
                     partMap.put("partition", p.partition());
@@ -61,20 +70,21 @@ public class KafkaTools {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Increase the number of partitions for a Kafka topic. NOTE: Total partitions must be greater than the current count.")
-    public Mono<String> increaseTopicPartitions(String topicName, int totalPartitions) {
+    @McpTool(description = "[Risk: MEDIUM, Read-Only: false] Apply an approved operational migration to dynamically scale a topic's partition count. Required when consumer concurrency bottlenecks are identified.",
+             annotations = @McpTool.McpAnnotations(destructiveHint = true))
+    public Mono<String> applyPartitionScaling(String topicName, int totalPartitions) {
         return Mono.fromCallable(() -> {
             try (AdminClient adminClient = createAdminClient()) {
                 Map<String, NewPartitions> newPartitions = new HashMap<>();
                 newPartitions.put(topicName, NewPartitions.increaseTo(totalPartitions));
                 adminClient.createPartitions(newPartitions).all().get();
-                return "Successfully increased partitions for topic " + topicName + " to " + totalPartitions;
+                return "Successfully scaled partitions for topic " + topicName + " to " + totalPartitions;
             }
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Get the configuration properties set for a Kafka topic (e.g. retention.ms, max.message.bytes)")
-    public Mono<Map<String, String>> getTopicConfiguration(String topicName) {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Audit topic configuration for retention policies, compression, and segment sizes to diagnose capacity or throughput bottlenecks.")
+    public Mono<Map<String, String>> auditTopicConfiguration(String topicName) {
         return Mono.fromCallable(() -> {
             try (AdminClient adminClient = createAdminClient()) {
                 ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, topicName);
@@ -89,11 +99,10 @@ public class KafkaTools {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Calculate consumer lag for a given consumer group across all its assigned partitions")
-    public Mono<List<Map<String, Object>>> getConsumerGroupLag(String groupId) {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Analyze consumer lag to determine if a consumer group is failing to keep up with ingestion rates. Use this to trigger partition scaling workflows.")
+    public Mono<List<Map<String, Object>>> analyzeConsumerLag(String groupId) {
         return Mono.fromCallable(() -> {
             try (AdminClient adminClient = createAdminClient()) {
-                // Get committed offsets for the group
                 Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> committedOffsets = 
                         adminClient.listConsumerGroupOffsets(groupId).partitionsToOffsetAndMetadata().get();
                 
@@ -101,7 +110,6 @@ public class KafkaTools {
                     return Collections.<Map<String, Object>>emptyList();
                 }
 
-                // Prepare request to get end offsets for those partitions
                 Map<TopicPartition, OffsetSpec> requestLatestOffsets = new HashMap<>();
                 for (TopicPartition tp : committedOffsets.keySet()) {
                     requestLatestOffsets.put(tp, OffsetSpec.latest());
@@ -130,8 +138,8 @@ public class KafkaTools {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @McpTool(description = "Get the current end offsets for all partitions of a topic to understand data volume and scalability")
-    public Mono<List<Map<String, Object>>> getTopicOffsets(String topicName) {
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Inspect partition offsets to map throughput distribution and detect dead partitions.")
+    public Mono<List<Map<String, Object>>> inspectPartitionOffsets(String topicName) {
         return Mono.fromCallable(() -> {
             try (AdminClient adminClient = createAdminClient()) {
                 TopicDescription description = adminClient.describeTopics(Collections.singletonList(topicName))
@@ -153,6 +161,42 @@ public class KafkaTools {
                     offsetList.add(info);
                 }
                 return offsetList;
+            }
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @McpTool(description = "[Risk: LOW, Read-Only: true] Detect partition skew to diagnose hot-spotting or poor partitioning keys. Calculates the variance between the highest and lowest partition offsets.")
+    public Mono<Map<String, Object>> detectPartitionSkew(String topicName) {
+        return Mono.fromCallable(() -> {
+            try (AdminClient adminClient = createAdminClient()) {
+                TopicDescription description = adminClient.describeTopics(Collections.singletonList(topicName))
+                        .allTopicNames().get().get(topicName);
+
+                Map<TopicPartition, OffsetSpec> requestLatestOffsets = new HashMap<>();
+                for (org.apache.kafka.common.TopicPartitionInfo p : description.partitions()) {
+                    requestLatestOffsets.put(new TopicPartition(topicName, p.partition()), OffsetSpec.latest());
+                }
+
+                Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> latestOffsets = 
+                        adminClient.listOffsets(requestLatestOffsets).all().get();
+
+                long maxOffset = -1;
+                long minOffset = Long.MAX_VALUE;
+                for (ListOffsetsResult.ListOffsetsResultInfo info : latestOffsets.values()) {
+                    if (info.offset() > maxOffset) maxOffset = info.offset();
+                    if (info.offset() < minOffset) minOffset = info.offset();
+                }
+
+                long diff = maxOffset - (minOffset == Long.MAX_VALUE ? 0 : minOffset);
+                
+                Map<String, Object> result = new HashMap<>();
+                result.put("topic", topicName);
+                result.put("max_offset", maxOffset);
+                result.put("min_offset", minOffset == Long.MAX_VALUE ? 0 : minOffset);
+                result.put("skew_variance", diff);
+                result.put("is_highly_skewed", diff > 10000); // Arbitrary threshold for flagging
+
+                return result;
             }
         }).subscribeOn(Schedulers.boundedElastic());
     }
