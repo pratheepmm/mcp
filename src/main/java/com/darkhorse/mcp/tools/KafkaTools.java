@@ -2,11 +2,13 @@ package com.darkhorse.mcp.tools;
 
 import com.darkhorse.mcp.service.KafkaService;
 import org.springframework.ai.mcp.annotation.McpTool;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 @Service
+@ConditionalOnProperty(name = "mcp.tools.kafka.enabled", havingValue = "true", matchIfMissing = true)
 public class KafkaTools {
 
     private final KafkaService kafkaService;

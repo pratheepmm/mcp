@@ -1,5 +1,6 @@
 package com.darkhorse.mcp.service;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -7,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 @Service
+@ConditionalOnProperty(name = "mcp.tools.postgres.enabled", havingValue = "true", matchIfMissing = true)
 public class PostgresService {
 
     private final JdbcTemplate jdbcTemplate;
