@@ -39,22 +39,37 @@ To use this with an MCP client (like Claude Desktop), add the following to your 
 {
   "mcpServers": {
     "infra-debugging": {
-      "url": "http://localhost:8080/mcp/sse",
-      "env": {
-        "MCP_TOOLS_POSTGRES_ENABLED": "true",
-        "MCP_TOOLS_KAFKA_ENABLED": "true"
-      }
+      "url": "http://localhost:8080/mcp/sse"
     }
   }
 }
 ```
 
-> **Note**: For SSE mode, you must first start the server manually (e.g., `./gradlew bootRun`) before the client can connect.
+> **Note**: For SSE mode, the server is started independently. You must pass environment variables to the server process itself before the client connects:
+> ```bash
+> MCP_TOOLS_POSTGRES_ENABLED=true MCP_TOOLS_KAFKA_ENABLED=false ./gradlew bootRun
+> ```
 
-#### Enabling/Disabling Toolsets
-You can load only the tools you need by setting the following environment variables (both default to `true`):
-- `MCP_TOOLS_POSTGRES_ENABLED=false` (Disables all Postgres tools)
-- `MCP_TOOLS_KAFKA_ENABLED=false` (Disables all Kafka tools)
+#### Alternative: STDIO Mode
+If you prefer the client to manage starting the server, switch back to STDIO mode in `application.properties` and use the following config. In STDIO mode, the client spawns the process, so you pass the environment variables in the `env` block:
+
+```json
+{
+  "mcpServers": {
+    "infra-debugging": {
+      "command": "java",
+      "args": [
+        "-jar",
+        "/Users/Pratheep/Downloads/projects/mcp/build/libs/mcp-0.0.1-SNAPSHOT.jar"
+      ],
+      "env": {
+        "MCP_TOOLS_POSTGRES_ENABLED": "true",
+        "MCP_TOOLS_KAFKA_ENABLED": "false"
+      }
+    }
+  }
+}
+```
 
 ## Available Tools (Consolidated)
 
